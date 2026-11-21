@@ -41,8 +41,6 @@ final class Prefs {
 
     static boolean bgNoisy(Context c) { return b(c, "bg_noisy", true); }
 
-    static boolean bgFocus(Context c) { return b(c, "bg_focus", true); }
-
     // ---- Картинка в картинке (только Android 8+)
     static boolean pipAuto(Context c) { return Flavor.PIP && b(c, "pip_auto", false); }
 

@@ -79,9 +79,6 @@ public class SettingsActivity extends Activity {
                             + "но продолжится при сворачивании.", null));
             bgDependents.add(toggle("bg_noisy", true, "Пауза при отключении наушников",
                     "Чтобы звук внезапно не пошёл в динамик.", null));
-            bgDependents.add(toggle("bg_focus", true, "Пауза при звонках и других звуках",
-                    "Останавливается, когда звонят или включается музыка в другом приложении; "
-                            + "после короткого прерывания продолжает сама.", null));
             refreshBgDependents(prefs.getBoolean("bg", true));
         }
 

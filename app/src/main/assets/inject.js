@@ -19,7 +19,7 @@
 
   var bridge = window.YTXBridge;
   var nativeParse = JSON.parse;
-  var cfg = { role: 'browse', adblock: true, bg: false, speed: 1 };
+  var cfg = { role: 'browse', adblock: true, bg: false, speed: 1, pip: false };
   try { if (bridge) cfg = nativeParse(bridge.config()); } catch (e) {}
   var isPlayer = cfg.role === 'player';
 
@@ -136,6 +136,12 @@
       'max-width:none!important;max-height:none!important;margin:0!important;transform:none!important;' +
       'object-fit:contain!important;z-index:2147483647!important;background:#000!important}\n';
 
+  // Плеер: прячем «Включить звук» — звук включаем сами
+  var PLAYER_CSS = [
+    '.ytp-unmute', '.ytp-unmute-inner', '.html5-video-player [class*="unmute"]',
+    '[class*="unmute-button"]', '.ytm-muted-autoplay-endscreen'
+  ].map(function (s) { return 'html.ytx-player ' + s + '{display:none!important}'; }).join('\n') + '\n';
+
   // Кнопки приложения в шапке YouTube
   var BTN_CSS =
     '.ytx-btn{display:inline-flex!important;align-items:center;justify-content:center;width:40px;height:40px;' +
@@ -145,14 +151,17 @@
     '.ytx-btn svg{width:24px;height:24px;fill:currentColor;pointer-events:none}\n' +
     '.ytx-float{position:fixed!important;z-index:2147483646;background:rgba(0,0,0,.55)!important;color:#fff!important}\n';
 
+  var miniPad = 0;
   var style = document.createElement('style');
   style.id = 'ytx-style';
   var lastCss = null;
   function ensureStyle() {
-    var css = (api.cfg.adblock ? AD_CSS + '\n' : '') + VIDEO_ONLY_CSS + BTN_CSS;
+    var css = (api.cfg.adblock ? AD_CSS + '\n' : '') + VIDEO_ONLY_CSS + BTN_CSS + PLAYER_CSS +
+      (miniPad > 0 ? 'html body{padding-bottom:' + miniPad + 'px!important}\n' : '');
     if (css !== lastCss) { style.textContent = css; lastCss = css; }
     var rootEl = document.documentElement;
     if (rootEl && !rootEl.contains(style)) (document.head || rootEl).appendChild(style);
+    if (rootEl && isPlayer && !rootEl.classList.contains('ytx-player')) rootEl.classList.add('ytx-player');
   }
   ensureStyle();
 
@@ -182,6 +191,17 @@
       document.addEventListener(t, stop, true);
     });
   })();
+
+  /* Плеер открывается программно (без нажатия на странице), и YouTube из-за этого
+     запускает видео без звука с плашкой «Включить звук». Говорим ему, что нажатие было. */
+  if (isPlayer) {
+    try {
+      var UAp = window.UserActivation && UserActivation.prototype;
+      if (UAp) each(['hasBeenActive', 'isActive'], function (p) {
+        try { Object.defineProperty(UAp, p, { configurable: true, get: function () { return true; } }); } catch (e) {}
+      });
+    } catch (e) {}
+  }
 
   /* ================================================================== */
   /* 4. Маршрутизация ссылок между окнами                                */
@@ -307,6 +327,7 @@
     try { if (mp && typeof mp.setPlaybackRate === 'function') mp.setPlaybackRate(r); } catch (e) {}
     var v = video(); if (v) v.playbackRate = r;
   };
+  api.setMiniPad = function (px) { miniPad = +px || 0; ensureStyle(); };
   api.getSpeed = function () { var v = video(); return v ? v.playbackRate : 1; };
   api.setCfg = function (c) {
     for (var k in c) api.cfg[k] = c[k];
@@ -334,7 +355,8 @@
   var ICONS = {
     settings: 'M19.14 12.94a7.07 7.07 0 0 0 .06-.94 7.07 7.07 0 0 0-.06-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96a7.03 7.03 0 0 0-1.62-.94l-.36-2.54A.48.48 0 0 0 13.92 2h-3.84a.48.48 0 0 0-.48.41l-.36 2.54c-.59.24-1.13.56-1.62.94l-2.39-.96a.49.49 0 0 0-.59.22L2.72 8.47a.48.48 0 0 0 .12.61l2.03 1.58a7.4 7.4 0 0 0 0 1.88l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54a7.03 7.03 0 0 0 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.49.49 0 0 0-.12-.61zM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2z',
     minimize: 'M7.41 8.59 12 13.17l4.59-4.58L18 10l-6 6-6-6z',
-    menu: 'M12 8a2 2 0 1 0 0-4 2 2 0 0 0 0 4zm0 2a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm0 6a2 2 0 1 0 0 4 2 2 0 0 0 0-4z'
+    menu: 'M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z',
+    pip: 'M19 11h-8v6h8v-6zm4 8V4.98C23 3.88 22.1 3 21 3H3c-1.1 0-2 .88-2 1.98V19c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2zm-2 .02H3V4.97h18v14.05z'
   };
   function makeBtn(action, label) {
     var b = document.createElement('button');
@@ -342,8 +364,18 @@
     b.setAttribute('aria-label', label);
     b.setAttribute('type', 'button');
     b.innerHTML = '<svg viewBox="0 0 24 24"><path d="' + ICONS[action] + '"/></svg>';
-    var fire = function (e) { e.preventDefault(); e.stopImmediatePropagation(); call('uiAction', action); };
+    // YouTube может гасить click в шапке, поэтому ловим и касание; повторы отсекаем
+    var last = 0;
+    var fire = function (e) {
+      e.preventDefault(); e.stopImmediatePropagation();
+      var now = Date.now();
+      if (now - last < 600) return;
+      last = now;
+      call('uiAction', action);
+    };
+    b.addEventListener('touchend', fire, true);
     b.addEventListener('click', fire, true);
+    b.addEventListener('touchstart', function (e) { e.stopImmediatePropagation(); }, true);
     return b;
   }
   function topbar() {
@@ -352,19 +384,27 @@
       q('.mobile-topbar-header-content') || q('ytm-mobile-topbar-renderer header') ||
       q('header.mobile-topbar-header');
   }
+  function firstVisibleChild(bar) {
+    // ставим ⌄ перед логотипом, пропуская пустые/служебные узлы
+    for (var c = bar.firstElementChild; c; c = c.nextElementSibling) {
+      if (c.offsetWidth > 0 || c.offsetHeight > 0) return c;
+    }
+    return bar.firstChild;
+  }
   var startedAt = Date.now();
   function ensureButtons() {
     if (!document.body || api.videoOnly) return;
     var bar = topbar();
-    var want = isPlayer ? ['minimize', 'menu'] : ['settings'];
-    var labels = { settings: 'Настройки приложения', minimize: 'Свернуть видео', menu: 'Меню плеера' };
+    var want = isPlayer ? (api.cfg.pip ? ['minimize', 'pip', 'menu'] : ['minimize', 'menu']) : ['settings'];
+    var labels = { settings: 'Настройки приложения', minimize: 'Свернуть видео', menu: 'Меню плеера',
+      pip: 'Картинка в картинке' };
     each(want, function (action) {
       var existing = q('.ytx-btn-' + action);
       if (bar) {
         if (existing && bar.contains(existing)) return;
         if (existing) existing.parentNode.removeChild(existing);
         var b = makeBtn(action, labels[action]);
-        if (action === 'minimize') bar.insertBefore(b, bar.firstChild);
+        if (action === 'minimize') bar.insertBefore(b, firstVisibleChild(bar));
         else bar.appendChild(b);
       } else if (!existing && Date.now() - startedAt > 4000) {
         // шапку не нашли — плавающая кнопка
@@ -372,6 +412,7 @@
         f.classList.add('ytx-float');
         if (action === 'minimize') { f.style.top = '8px'; f.style.left = '8px'; }
         else if (action === 'menu') { f.style.top = '8px'; f.style.right = '8px'; }
+        else if (action === 'pip') { f.style.top = '8px'; f.style.right = '56px'; }
         else { f.style.bottom = '64px'; f.style.left = '8px'; }
         document.body.appendChild(f);
       }
@@ -386,6 +427,34 @@
   var lastSentAt = 0;
   var lastLact = 0;
   var speedAppliedFor = '';
+  var nudgedFor = '';
+  var lastLayout = '';
+
+  function playerApi() { return document.getElementById('movie_player') || q('.html5-video-player'); }
+
+  // Звук включаем сами (кроме времени рекламы — её мы глушим специально)
+  function ensureSound(v, ad) {
+    if (!v || ad || adMutedBefore !== null || !v.muted) return;
+    v.muted = false;
+    var mp = playerApi();
+    try { if (mp && mp.unMute) mp.unMute(); } catch (e) {}
+  }
+
+  // Лента сообщает приложению высоту нижнего меню и открыт ли раздел Shorts
+  function reportLayout() {
+    var pivot = q('ytm-pivot-bar-renderer');
+    var h = 0;
+    if (pivot) {
+      var r = pivot.getBoundingClientRect();
+      if (r.height > 0 && r.bottom >= window.innerHeight - 2) h = Math.round(r.height);
+    }
+    var shorts = /^\/shorts(\/|$)/.test(location.pathname);
+    var key = h + '|' + shorts;
+    if (key !== lastLayout) {
+      lastLayout = key;
+      call('onBrowseLayout', JSON.stringify({ pivot: h, shorts: shorts }));
+    }
+  }
 
   function text(sel) {
     var el = q(sel);
@@ -421,7 +490,9 @@
   function report(force) {
     var v = video();
     var ad = skipAds(v);
-    if (!isPlayer || !bridge) return;
+    if (!isPlayer) { reportLayout(); return; }
+    if (!bridge) return;
+    if (v && isVideoPath(location.pathname)) ensureSound(v, ad);
 
     var path = location.pathname;
     var state = 'none';
@@ -474,12 +545,25 @@
         }
       }
       if (api.videoOnly && (t === 'loadedmetadata' || t === 'playing')) api.setVideoOnly(true);
+      if (t === 'playing') ensureSound(v, !!q('.html5-video-player.ad-showing'));
+      // Видео загрузилось, но YouTube его не запустил — один раз запускаем сами
+      if ((t === 'loadedmetadata' || t === 'canplay') && isVideoPath(location.pathname)) {
+        var nid = currentId();
+        if (nid && nid !== nudgedFor) {
+          nudgedFor = nid;
+          setTimeout(function () { var vv = video(); if (vv && vv.paused && !vv.ended) api.play(); }, 700);
+        }
+      }
       report(t === 'seeked' || t === 'play' || t === 'pause' || t === 'ratechange');
-    } else if ((t === 'play' || t === 'playing') && v && v.tagName === 'VIDEO' && !v.muted && v.volume > 0) {
-      call('onBrowsePlay');   // в ленте заиграло видео со звуком (шортс) — ставим плеер на паузу
+    } else if (t === 'playing' && v && v.tagName === 'VIDEO' && /^\/shorts\//.test(location.pathname)) {
+      // В ленте заиграл шортс со звуком — ставим основное видео на паузу.
+      // Проверяем с задержкой: превью в ленте играют без звука, и звук им ставят не сразу.
+      setTimeout(function () {
+        if (!v.paused && !v.muted && v.volume > 0 && /^\/shorts\//.test(location.pathname)) call('onBrowsePlay');
+      }, 400);
     }
   }
-  each(['play', 'playing', 'pause', 'ended', 'loadedmetadata', 'durationchange', 'emptied', 'seeked', 'ratechange'],
+  each(['play', 'playing', 'pause', 'ended', 'loadedmetadata', 'canplay', 'durationchange', 'emptied', 'seeked', 'ratechange'],
     function (t) { document.addEventListener(t, onMedia, true); });
   window.addEventListener('yt-navigate-finish', function () { report(true); }, true);
 

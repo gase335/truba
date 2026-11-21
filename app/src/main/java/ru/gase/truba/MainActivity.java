@@ -76,6 +76,9 @@ public class MainActivity extends Activity {
     private boolean inPip;
     private boolean stopped;
     private boolean pausedByBrowse;
+    /** Высота нижнего меню YouTube в ленте (CSS px ≈ dp) и открыт ли раздел Shorts. */
+    private int browsePivot;
+    private boolean browseShorts;
 
     private View customView;
     private WebChromeClient.CustomViewCallback customCallback;
@@ -87,6 +90,7 @@ public class MainActivity extends Activity {
 
     private volatile boolean adblock = true;
     private volatile boolean background;
+    private volatile boolean pipAvailable;
     private boolean prefsLoaded;
 
     private Runnable sleepTask;
@@ -104,6 +108,7 @@ public class MainActivity extends Activity {
         scriptTag = "<script>" + injectJs + "</script>";
         adblock = Prefs.adblock(this);
         background = Prefs.background(this);
+        pipAvailable = Pip.supported(this);
 
         root = new FrameLayout(this);
         root.setBackgroundColor(0xFF0F0F0F);
@@ -317,24 +322,27 @@ public class MainActivity extends Activity {
 
     private void applyLayout() {
         boolean mini = mode == MINI && !inPip;
+        // В шортс мини-плеер не показываем — он мешает и всё равно стоит на паузе
+        boolean miniShown = mini && !browseShorts;
         int miniH = dp(64);
         int miniW = Math.round(miniH * 16f / 9f);
 
-        FrameLayout.LayoutParams blp = (FrameLayout.LayoutParams) browseWeb.getLayoutParams();
-        int bottom = mini ? miniH : 0;
-        if (blp.bottomMargin != bottom) {
-            blp.bottomMargin = bottom;
-            browseWeb.setLayoutParams(blp);
-        }
-        browseWeb.setVisibility(inPip && mode != NONE ? View.INVISIBLE : View.VISIBLE);
+        // Лента не видна, пока видео развёрнуто или в PiP: заодно там останавливаются превью
+        boolean browseHidden = mode == EXPANDED || (inPip && mode != NONE);
+        browseWeb.setVisibility(browseHidden ? View.INVISIBLE : View.VISIBLE);
+        browseJs("setMiniPad(" + (miniShown ? 64 : 0) + ")");
 
-        if (mode == NONE || playerWeb == null) {
+        if (mode == NONE || playerWeb == null || (mini && !miniShown)) {
             playerBox.setVisibility(View.GONE);
+            if (mode != NONE && playerWeb != null) runPlayerCommand("setVideoOnly(true)");
             return;
         }
         playerBox.setVisibility(View.VISIBLE);
-        playerBox.setLayoutParams(new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-                mini ? miniH : ViewGroup.LayoutParams.MATCH_PARENT, Gravity.BOTTOM));
+        FrameLayout.LayoutParams plp = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                mini ? miniH : ViewGroup.LayoutParams.MATCH_PARENT, Gravity.BOTTOM);
+        // Мини-плеер — над нижним меню YouTube, как в официальном приложении
+        if (mini) plp.bottomMargin = dp(browsePivot);
+        playerBox.setLayoutParams(plp);
         playerBox.setBackgroundColor(mini ? 0xFF212121 : Color.BLACK);
         playerBox.setElevation(mini ? dp(8) : 0);
 
@@ -350,6 +358,13 @@ public class MainActivity extends Activity {
         miniInfo.setVisibility(mini ? View.VISIBLE : View.GONE);
 
         runPlayerCommand("setVideoOnly(" + (mini || inPip) + ")");
+    }
+
+    private void onBrowseLayout(int pivot, boolean shorts) {
+        if (pivot == browsePivot && shorts == browseShorts) return;
+        browsePivot = pivot;
+        browseShorts = shorts;
+        if (mode == MINI) applyLayout();
     }
 
     private void setMode(int m) {
@@ -419,6 +434,7 @@ public class MainActivity extends Activity {
         if ("settings".equals(a)) openSettings();
         else if ("minimize".equals(a)) setMode(MINI);
         else if ("menu".equals(a)) showPlayerMenu();
+        else if ("pip".equals(a)) enterPipNow();
     }
 
     // ================================================================ player menu
@@ -771,7 +787,8 @@ public class MainActivity extends Activity {
             return "{\"role\":\"" + (player ? "player" : "browse") + "\""
                     + ",\"adblock\":" + adblock
                     + ",\"bg\":" + (player && background)
-                    + ",\"speed\":" + Prefs.speed(MainActivity.this) + "}";
+                    + ",\"speed\":" + Prefs.speed(MainActivity.this)
+                    + ",\"pip\":" + (player && pipAvailable) + "}";
         }
 
         @JavascriptInterface
@@ -796,6 +813,22 @@ public class MainActivity extends Activity {
         public void onBrowsePlay(String ignored) {
             if (player) return;
             post(new Runnable() { public void run() { MainActivity.this.onBrowsePlay(); } });
+        }
+
+        @JavascriptInterface
+        public void onBrowseLayout(String json) {
+            if (player) return;
+            int pivot = 0;
+            boolean shorts = false;
+            try {
+                org.json.JSONObject o = new org.json.JSONObject(json);
+                pivot = Math.max(0, Math.min(200, o.optInt("pivot", 0)));
+                shorts = o.optBoolean("shorts", false);
+            } catch (Exception ignored) {
+            }
+            final int p = pivot;
+            final boolean sh = shorts;
+            post(new Runnable() { public void run() { MainActivity.this.onBrowseLayout(p, sh); } });
         }
 
         @JavascriptInterface

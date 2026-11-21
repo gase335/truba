@@ -13,8 +13,6 @@ import android.content.pm.ServiceInfo;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.drawable.Icon;
-import android.media.AudioAttributes;
-import android.media.AudioFocusRequest;
 import android.media.AudioManager;
 import android.media.MediaMetadata;
 import android.media.session.MediaSession;
@@ -43,11 +41,6 @@ public class PlaybackService extends Service {
     private NotificationManager nm;
     private PowerManager.WakeLock wakeLock;
     private WifiManager.WifiLock wifiLock;
-    private AudioManager audio;
-    private AudioFocusRequest focusRequest;
-    private boolean hasFocus;
-    private boolean resumeOnFocusGain;
-    private long focusRequestedAt;
 
     private String metaKey = "";
     private String artUrl = "";
@@ -107,7 +100,6 @@ public class PlaybackService extends Service {
             wifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "Truba:wifi");
             wifiLock.setReferenceCounted(false);
         }
-        audio = (AudioManager) getSystemService(AUDIO_SERVICE);
 
         IntentFilter f = new IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY);
         f.addAction(Intent.ACTION_SCREEN_OFF);
@@ -138,7 +130,6 @@ public class PlaybackService extends Service {
     public void onDestroy() {
         instance = null;
         try { unregisterReceiver(noisy); } catch (Exception ignored) {}
-        abandonFocus();
         if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
         if (wifiLock != null && wifiLock.isHeld()) wifiLock.release();
         if (session != null) {
@@ -187,8 +178,6 @@ public class PlaybackService extends Service {
         if (playing) {
             if (!wakeLock.isHeld()) wakeLock.acquire(4 * 60 * 60 * 1000L);
             if (wifiLock != null && !wifiLock.isHeld()) wifiLock.acquire();
-            if (Prefs.bgFocus(this)) requestFocus();
-            else abandonFocus();
         } else {
             if (wakeLock.isHeld()) wakeLock.release();
             if (wifiLock != null && wifiLock.isHeld()) wifiLock.release();
@@ -287,59 +276,8 @@ public class PlaybackService extends Service {
         return b.build();
     }
 
-    // ---------------------------------------------------------------- audio focus
-
-    private final AudioManager.OnAudioFocusChangeListener focusListener =
-            new AudioManager.OnAudioFocusChangeListener() {
-                @Override
-                public void onAudioFocusChange(int change) {
-                    switch (change) {
-                        case AudioManager.AUDIOFOCUS_LOSS:
-                            hasFocus = false;
-                            resumeOnFocusGain = false;
-                            // защита от гонки, если кто-то в нашем же процессе запросил фокус
-                            if (SystemClock.elapsedRealtime() - focusRequestedAt > 1500) Ctl.pause();
-                            break;
-                        case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT:
-                            hasFocus = false;
-                            if (Ctl.state.playing()) {
-                                resumeOnFocusGain = true;
-                                Ctl.pause();
-                            }
-                            break;
-                        case AudioManager.AUDIOFOCUS_GAIN:
-                            hasFocus = true;
-                            if (resumeOnFocusGain) {
-                                resumeOnFocusGain = false;
-                                Ctl.play();
-                            }
-                            break;
-                        default:
-                            break;
-                    }
-                }
-            };
-
-    private void requestFocus() {
-        if (hasFocus || audio == null) return;
-        if (focusRequest == null) {
-            focusRequest = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
-                    .setAudioAttributes(new AudioAttributes.Builder()
-                            .setUsage(AudioAttributes.USAGE_MEDIA)
-                            .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE)
-                            .build())
-                    .setOnAudioFocusChangeListener(focusListener, Ctl.MAIN)
-                    .setWillPauseWhenDucked(false)
-                    .build();
-        }
-        focusRequestedAt = SystemClock.elapsedRealtime();
-        hasFocus = audio.requestAudioFocus(focusRequest) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED;
-    }
-
-    private void abandonFocus() {
-        if (audio != null && focusRequest != null) audio.abandonAudioFocusRequest(focusRequest);
-        hasFocus = false;
-    }
+    // Аудиофокус намеренно не запрашиваем: WebView (Chromium) делает это сам,
+    // а второй запрос из того же приложения отбирал фокус у плеера и ставил видео на паузу.
 
     private final BroadcastReceiver noisy = new BroadcastReceiver() {
         @Override
