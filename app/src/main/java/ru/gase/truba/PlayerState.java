@@ -12,6 +12,7 @@ final class PlayerState {
     boolean ad;
     double duration;
     double position;
+    double rate = 1;
     int width;
     int height;
     long receivedAt = android.os.SystemClock.elapsedRealtime();
@@ -32,6 +33,8 @@ final class PlayerState {
             s.ad = o.optBoolean("ad", false);
             s.duration = o.optDouble("dur", 0);
             s.position = o.optDouble("pos", 0);
+            s.rate = o.optDouble("rate", 1);
+            if (Double.isNaN(s.rate) || s.rate <= 0) s.rate = 1;
             s.width = o.optInt("w", 0);
             s.height = o.optInt("h", 0);
             if (Double.isNaN(s.duration) || Double.isInfinite(s.duration)) s.duration = 0;

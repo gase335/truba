@@ -1,10 +1,17 @@
 /*
  * Труба — скрипт, внедряемый в страницы YouTube.
- *  1. Вырезает рекламу из ответов YouTube (adPlacements / playerAds / adSlots и рекламные карточки).
- *  2. Пропускает видеорекламу, если она всё-таки проскочила.
- *  3. Притворяется, что страница всегда видима (для фонового воспроизведения).
- *  4. Сообщает приложению состояние плеера и принимает команды (play/pause/next/...).
- *  5. Раскладка «только видео» для режима картинка-в-картинке.
+ *
+ * В приложении два окна (WebView) с разными ролями:
+ *   browse — лента, поиск, каналы, шортс;
+ *   player — открытое видео (разворачивается на весь экран или сворачивается в мини-плеер).
+ *
+ *  1. Вырезает рекламу из ответов YouTube и пропускает видеорекламу, если она проскочила.
+ *  2. Разводит ссылки по окнам: видео → плеер, всё остальное → лента.
+ *  3. В плеере: притворяется, что страница всегда видима (фоновый режим), сообщает приложению
+ *     состояние, принимает команды (play/pause/next/...), режим «только видео» для мини-плеера и PiP.
+ *  4. Добавляет в шапку YouTube кнопки приложения (настройки, свернуть, меню).
+ *
+ * Код намеренно на ES5 — должен работать и в старом WebView на Android 7.
  */
 (function () {
   'use strict';
@@ -12,14 +19,20 @@
 
   var bridge = window.YTXBridge;
   var nativeParse = JSON.parse;
-  var cfg = { adblock: true, bg: true };
+  var cfg = { role: 'browse', adblock: true, bg: false, speed: 1 };
   try { if (bridge) cfg = nativeParse(bridge.config()); } catch (e) {}
+  var isPlayer = cfg.role === 'player';
 
   var api = (window.__ytx = { cfg: cfg });
 
-  /* ------------------------------------------------------------------ */
-  /* 1. Вырезание рекламы из данных                                      */
-  /* ------------------------------------------------------------------ */
+  function q(sel, root) { try { return (root || document).querySelector(sel); } catch (e) { return null; } }
+  function qa(sel, root) { try { return (root || document).querySelectorAll(sel); } catch (e) { return []; } }
+  function each(list, fn) { for (var i = 0; i < list.length; i++) fn(list[i], i); }
+  function call(name, arg) { try { if (bridge && bridge[name]) bridge[name](arg === undefined ? '' : arg); } catch (e) {} }
+
+  /* ================================================================== */
+  /* 1. Вырезание рекламы из данных                                       */
+  /* ================================================================== */
   var PRUNE_KEYS = ['adPlacements', 'adSlots', 'playerAds', 'adBreakHeartbeatParams',
     'adBreakParams', 'enforcementMessageViewModel'];
   var AD_RENDERERS = {
@@ -40,8 +53,7 @@
     if (hasAdKey(x)) return true;
     if (x.richItemRenderer && hasAdKey(x.richItemRenderer.content)) return true;
     var isr = x.itemSectionRenderer;
-    if (isr && Array.isArray(isr.contents) && isr.contents.length > 0 &&
-        isr.contents.every(hasAdKey)) return true;
+    if (isr && Array.isArray(isr.contents) && isr.contents.length > 0 && isr.contents.every(hasAdKey)) return true;
     return false;
   }
   function deepClean(o, depth) {
@@ -82,59 +94,72 @@
       return r;
     };
     try {
-      var origJson = Response.prototype.json;
-      Response.prototype.json = function () {
-        return origJson.apply(this, arguments).then(function (o) { return api.clean(o); });
-      };
+      var origJson = window.Response && Response.prototype.json;
+      if (origJson) {
+        Response.prototype.json = function () {
+          return origJson.apply(this, arguments).then(function (o) { return api.clean(o); });
+        };
+      }
     } catch (e) {}
     trap('ytInitialPlayerResponse');
     trap('ytInitialData');
     trap('playerResponse');
   }
 
-  /* ------------------------------------------------------------------ */
-  /* 2. CSS: скрытие рекламных блоков + раскладка для PiP                */
-  /* ------------------------------------------------------------------ */
-  var AD_CSS = [
+  /* ================================================================== */
+  /* 2. CSS                                                             */
+  /* ================================================================== */
+  // Каждый селектор — отдельным правилом: если старый WebView не знает :has(),
+  // он отбросит только это правило, а не весь список.
+  var AD_SELECTORS = [
     'ytm-promoted-sparkles-web-renderer', 'ytm-promoted-sparkles-text-search-renderer',
     'ytm-promoted-video-renderer', 'ytm-companion-ad-renderer', 'ytm-companion-slot',
     'ad-slot-renderer', 'ytm-ad-slot-renderer', 'ytm-statement-banner-renderer',
     'ytm-mealbar-promo-renderer', 'ytm-banner-promo-renderer', 'ytm-search-pyv-renderer',
-    'ytm-rich-item-renderer:has(ad-slot-renderer)', 'ytm-item-section-renderer:has(> lazy-list > ad-slot-renderer:only-child)',
+    'ytm-rich-item-renderer:has(ad-slot-renderer)',
+    'ytm-item-section-renderer:has(> lazy-list > ad-slot-renderer:only-child)',
     'ytm-rich-section-renderer:has(ytm-statement-banner-renderer)',
     '.ytp-ad-overlay-container', '.ytp-ad-image-overlay', '.ytp-ad-text-overlay',
-    '.ytm-promoted-sparkles-web-renderer', '#player-ads', '.ad-container', '.masthead-ad',
-    'ytd-enforcement-message-view-model', 'tp-yt-paper-dialog:has(ytd-enforcement-message-view-model)',
-    'ytm-paid-content-overlay-renderer'
-  ].join(',') + '{display:none!important}';
+    '#player-ads', '.ad-container', '.masthead-ad', 'ytm-paid-content-overlay-renderer',
+    'ytd-enforcement-message-view-model', 'tp-yt-paper-dialog:has(ytd-enforcement-message-view-model)'
+  ];
+  var AD_CSS = AD_SELECTORS.map(function (s) { return s + '{display:none!important}'; }).join('\n');
 
-  var PIP_CSS =
-    'html.ytx-pip,html.ytx-pip body{background:#000!important;overflow:hidden!important}' +
-    'html.ytx-pip body *{visibility:hidden!important}' +
-    'html.ytx-pip .ytx-pip-anc{transform:none!important;contain:none!important;filter:none!important;' +
-      'will-change:auto!important;overflow:visible!important;clip-path:none!important}' +
-    'html.ytx-pip video.ytx-pip-v{visibility:visible!important;position:fixed!important;left:0!important;' +
+  // «Только видео» — для мини-плеера и картинки-в-картинке
+  var VIDEO_ONLY_CSS =
+    'html.ytx-vo,html.ytx-vo body{background:#000!important;overflow:hidden!important}\n' +
+    'html.ytx-vo body *{visibility:hidden!important}\n' +
+    'html.ytx-vo .ytx-vo-anc{transform:none!important;contain:none!important;filter:none!important;' +
+      'will-change:auto!important;overflow:visible!important;clip-path:none!important}\n' +
+    'html.ytx-vo video.ytx-vo-v{visibility:visible!important;position:fixed!important;left:0!important;' +
       'top:0!important;right:0!important;bottom:0!important;width:100vw!important;height:100vh!important;' +
       'max-width:none!important;max-height:none!important;margin:0!important;transform:none!important;' +
-      'object-fit:contain!important;z-index:2147483647!important;background:#000!important}';
+      'object-fit:contain!important;z-index:2147483647!important;background:#000!important}\n';
+
+  // Кнопки приложения в шапке YouTube
+  var BTN_CSS =
+    '.ytx-btn{display:inline-flex!important;align-items:center;justify-content:center;width:40px;height:40px;' +
+      'min-width:40px;flex:none;border:0;margin:0 2px;padding:0;background:transparent;color:inherit;' +
+      'border-radius:20px;cursor:pointer;-webkit-tap-highlight-color:transparent}\n' +
+    '.ytx-btn:active{background:rgba(128,128,128,.3)}\n' +
+    '.ytx-btn svg{width:24px;height:24px;fill:currentColor;pointer-events:none}\n' +
+    '.ytx-float{position:fixed!important;z-index:2147483646;background:rgba(0,0,0,.55)!important;color:#fff!important}\n';
 
   var style = document.createElement('style');
   style.id = 'ytx-style';
   var lastCss = null;
   function ensureStyle() {
-    var css = (api.cfg.adblock ? AD_CSS : '') + PIP_CSS;
+    var css = (api.cfg.adblock ? AD_CSS + '\n' : '') + VIDEO_ONLY_CSS + BTN_CSS;
     if (css !== lastCss) { style.textContent = css; lastCss = css; }
-    if (!style.isConnected) {
-      var host = document.head || document.documentElement;
-      if (host) host.appendChild(style);
-    }
+    var rootEl = document.documentElement;
+    if (rootEl && !rootEl.contains(style)) (document.head || rootEl).appendChild(style);
   }
   ensureStyle();
 
-  /* ------------------------------------------------------------------ */
-  /* 3. Фоновый режим: страница всегда «видима»                           */
-  /* ------------------------------------------------------------------ */
-  (function patchVisibility() {
+  /* ================================================================== */
+  /* 3. Фоновый режим (только плеер): страница всегда «видима»            */
+  /* ================================================================== */
+  if (isPlayer) (function patchVisibility() {
     var proto = Document.prototype;
     function wrap(prop, fake) {
       var d = Object.getOwnPropertyDescriptor(proto, prop);
@@ -151,16 +176,74 @@
     wrap('webkitHidden', false);
     wrap('visibilityState', 'visible');
     wrap('webkitVisibilityState', 'visible');
-    ['visibilitychange', 'webkitvisibilitychange'].forEach(function (t) {
+    each(['visibilitychange', 'webkitvisibilitychange'], function (t) {
       var stop = function (e) { if (api.cfg.bg) e.stopImmediatePropagation(); };
       window.addEventListener(t, stop, true);
       document.addEventListener(t, stop, true);
     });
   })();
 
-  /* ------------------------------------------------------------------ */
-  /* 4. Управление плеером                                              */
-  /* ------------------------------------------------------------------ */
+  /* ================================================================== */
+  /* 4. Маршрутизация ссылок между окнами                                */
+  /* ================================================================== */
+  function isYtHost(h) { return h === 'youtube.com' || /\.youtube\.com$/.test(h); }
+  function isVideoPath(p) { return p === '/watch' || /^\/live\/[\w-]+/.test(p); }
+
+  function routeUrl(href) {
+    var u;
+    try { u = new URL(href, location.href); } catch (e) { return null; }
+    if (!isYtHost(u.hostname)) return null;
+    return u;
+  }
+
+  window.addEventListener('click', function (e) {
+    var t = e.target;
+    var a = t && t.closest ? t.closest('a[href]') : null;
+    if (!a) return;
+    var u = routeUrl(a.getAttribute('href'));
+    if (!u) return;
+    if (isPlayer) {
+      if (isVideoPath(u.pathname)) return;         // другое видео — остаётся в плеере
+      e.preventDefault(); e.stopImmediatePropagation();
+      call('openBrowse', u.href);
+    } else if (isVideoPath(u.pathname)) {
+      e.preventDefault(); e.stopImmediatePropagation();
+      call('openVideo', u.href);
+    }
+  }, true);
+
+  // Запасной путь: YouTube сменил адрес программно (history.pushState)
+  var routing = false;
+  function checkRoute() {
+    if (routing) return;
+    var p = location.pathname;
+    if (isPlayer && !isVideoPath(p)) {
+      routing = true;
+      call('openBrowse', location.href);
+      history.back();
+      setTimeout(function () { routing = false; }, 800);
+    } else if (!isPlayer && isVideoPath(p)) {
+      routing = true;
+      api.pauseAll();
+      call('openVideo', location.href);
+      if (history.length > 1) history.back(); else location.replace('/');
+      setTimeout(function () { routing = false; }, 800);
+    }
+  }
+  each(['pushState', 'replaceState'], function (m) {
+    var orig = history[m];
+    if (!orig) return;
+    history[m] = function () {
+      var r = orig.apply(this, arguments);
+      setTimeout(checkRoute, 0);
+      return r;
+    };
+  });
+  window.addEventListener('popstate', function () { setTimeout(checkRoute, 0); }, true);
+
+  /* ================================================================== */
+  /* 5. Управление плеером                                               */
+  /* ================================================================== */
   var handlers = {};
   try {
     var ms = navigator.mediaSession;
@@ -174,15 +257,13 @@
   } catch (e) {}
 
   function video() {
-    return document.querySelector('video.ytx-pip-v') ||
-      document.querySelector('#player-container-id video, #movie_player video, .html5-video-player video') ||
-      document.querySelector('video');
+    return q('video.ytx-vo-v') ||
+      q('#player-container-id video, #movie_player video, .html5-video-player video') ||
+      q('video');
   }
-  function q(sel) { try { return document.querySelector(sel); } catch (e) { return null; } }
   function findButton(re) {
-    var list = document.querySelectorAll(
-      '#player-control-container button, .player-controls-middle button, .ytp-chrome-controls button, ' +
-      'ytm-reel-player-overlay-renderer button, .html5-video-player button');
+    var list = qa('#player-control-container button, .player-controls-middle button, ' +
+      '.ytp-chrome-controls button, .html5-video-player button');
     for (var i = 0; i < list.length; i++) {
       var b = list[i];
       var label = (b.getAttribute('aria-label') || '') + ' ' + (b.getAttribute('title') || '');
@@ -192,12 +273,12 @@
   }
 
   api.play = function () {
-    var v = video();
-    if (!v) return;
+    var v = video(); if (!v) return;
     var p = v.play();
     if (p && p.catch) p.catch(function () {});
   };
   api.pause = function () { var v = video(); if (v) v.pause(); };
+  api.pauseAll = function () { each(qa('video'), function (v) { try { v.pause(); } catch (e) {} }); };
   api.toggle = function () { var v = video(); if (!v) return; if (v.paused) api.play(); else v.pause(); };
   api.seekBy = function (s) {
     var v = video(); if (!v) return;
@@ -220,38 +301,101 @@
     if (handlers.previoustrack) { try { handlers.previoustrack({ action: 'previoustrack' }); return; } catch (e) {} }
     history.back();
   };
+  api.setSpeed = function (r) {
+    r = +r || 1;
+    var mp = document.getElementById('movie_player') || q('.html5-video-player');
+    try { if (mp && typeof mp.setPlaybackRate === 'function') mp.setPlaybackRate(r); } catch (e) {}
+    var v = video(); if (v) v.playbackRate = r;
+  };
+  api.getSpeed = function () { var v = video(); return v ? v.playbackRate : 1; };
   api.setCfg = function (c) {
     for (var k in c) api.cfg[k] = c[k];
     ensureStyle();
   };
 
-  /* ------------------------------------------------------------------ */
-  /* 5. Картинка-в-картинке                                             */
-  /* ------------------------------------------------------------------ */
-  api.setPip = function (on) {
-    Array.prototype.forEach.call(document.querySelectorAll('.ytx-pip-v'), function (el) { el.classList.remove('ytx-pip-v'); });
-    Array.prototype.forEach.call(document.querySelectorAll('.ytx-pip-anc'), function (el) { el.classList.remove('ytx-pip-anc'); });
-    var root = document.documentElement;
-    if (!on) { root.classList.remove('ytx-pip'); return; }
+  /* Режим «только видео» (мини-плеер, PiP) */
+  api.setVideoOnly = function (on) {
+    each(qa('.ytx-vo-v'), function (el) { el.classList.remove('ytx-vo-v'); });
+    each(qa('.ytx-vo-anc'), function (el) { el.classList.remove('ytx-vo-anc'); });
+    var rootEl = document.documentElement;
+    api.videoOnly = !!on;
+    if (!on) { rootEl.classList.remove('ytx-vo'); return; }
     var v = video();
     if (v) {
-      v.classList.add('ytx-pip-v');
-      for (var p = v.parentElement; p && p !== document.documentElement; p = p.parentElement) p.classList.add('ytx-pip-anc');
+      v.classList.add('ytx-vo-v');
+      for (var p = v.parentElement; p && p !== rootEl; p = p.parentElement) p.classList.add('ytx-vo-anc');
     }
-    root.classList.add('ytx-pip');
+    rootEl.classList.add('ytx-vo');
   };
 
-  /* ------------------------------------------------------------------ */
-  /* 6. Пропуск рекламы + отчёт о состоянии                              */
-  /* ------------------------------------------------------------------ */
+  /* ================================================================== */
+  /* 6. Кнопки приложения в шапке                                        */
+  /* ================================================================== */
+  var ICONS = {
+    settings: 'M19.14 12.94a7.07 7.07 0 0 0 .06-.94 7.07 7.07 0 0 0-.06-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96a7.03 7.03 0 0 0-1.62-.94l-.36-2.54A.48.48 0 0 0 13.92 2h-3.84a.48.48 0 0 0-.48.41l-.36 2.54c-.59.24-1.13.56-1.62.94l-2.39-.96a.49.49 0 0 0-.59.22L2.72 8.47a.48.48 0 0 0 .12.61l2.03 1.58a7.4 7.4 0 0 0 0 1.88l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54a7.03 7.03 0 0 0 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.49.49 0 0 0-.12-.61zM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2z',
+    minimize: 'M7.41 8.59 12 13.17l4.59-4.58L18 10l-6 6-6-6z',
+    menu: 'M12 8a2 2 0 1 0 0-4 2 2 0 0 0 0 4zm0 2a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm0 6a2 2 0 1 0 0 4 2 2 0 0 0 0-4z'
+  };
+  function makeBtn(action, label) {
+    var b = document.createElement('button');
+    b.className = 'ytx-btn ytx-btn-' + action;
+    b.setAttribute('aria-label', label);
+    b.setAttribute('type', 'button');
+    b.innerHTML = '<svg viewBox="0 0 24 24"><path d="' + ICONS[action] + '"/></svg>';
+    var fire = function (e) { e.preventDefault(); e.stopImmediatePropagation(); call('uiAction', action); };
+    b.addEventListener('click', fire, true);
+    return b;
+  }
+  function topbar() {
+    return q('ytm-mobile-topbar-renderer .mobile-topbar-header-content') ||
+      q('header.mobile-topbar-header .mobile-topbar-header-content') ||
+      q('.mobile-topbar-header-content') || q('ytm-mobile-topbar-renderer header') ||
+      q('header.mobile-topbar-header');
+  }
+  var startedAt = Date.now();
+  function ensureButtons() {
+    if (!document.body || api.videoOnly) return;
+    var bar = topbar();
+    var want = isPlayer ? ['minimize', 'menu'] : ['settings'];
+    var labels = { settings: 'Настройки приложения', minimize: 'Свернуть видео', menu: 'Меню плеера' };
+    each(want, function (action) {
+      var existing = q('.ytx-btn-' + action);
+      if (bar) {
+        if (existing && bar.contains(existing)) return;
+        if (existing) existing.parentNode.removeChild(existing);
+        var b = makeBtn(action, labels[action]);
+        if (action === 'minimize') bar.insertBefore(b, bar.firstChild);
+        else bar.appendChild(b);
+      } else if (!existing && Date.now() - startedAt > 4000) {
+        // шапку не нашли — плавающая кнопка
+        var f = makeBtn(action, labels[action]);
+        f.classList.add('ytx-float');
+        if (action === 'minimize') { f.style.top = '8px'; f.style.left = '8px'; }
+        else if (action === 'menu') { f.style.top = '8px'; f.style.right = '8px'; }
+        else { f.style.bottom = '64px'; f.style.left = '8px'; }
+        document.body.appendChild(f);
+      }
+    });
+  }
+
+  /* ================================================================== */
+  /* 7. Пропуск рекламы + отчёт о состоянии                              */
+  /* ================================================================== */
   var adMutedBefore = null;
   var lastKey = '';
   var lastSentAt = 0;
   var lastLact = 0;
+  var speedAppliedFor = '';
 
   function text(sel) {
     var el = q(sel);
     return el ? (el.textContent || '').trim() : '';
+  }
+  function currentId() {
+    try {
+      return new URLSearchParams(location.search).get('v') ||
+        ((location.pathname.match(/^\/(shorts|live|embed)\/([\w-]{6,})/) || [])[2]) || '';
+    } catch (e) { return ''; }
   }
 
   function skipAds(v) {
@@ -277,20 +421,15 @@
   function report(force) {
     var v = video();
     var ad = skipAds(v);
-    if (!bridge) return;
+    if (!isPlayer || !bridge) return;
 
     var path = location.pathname;
-    var onVideoPage = /^\/(watch|shorts\/|live\/|embed\/)/.test(path);
     var state = 'none';
-    if (v && onVideoPage && (v.currentSrc || v.src)) state = (v.paused || v.ended) ? 'paused' : 'playing';
+    if (v && isVideoPath(path) && (v.currentSrc || v.src)) state = (v.paused || v.ended) ? 'paused' : 'playing';
 
     var md = null;
     try { md = navigator.mediaSession && navigator.mediaSession.metadata; } catch (e) {}
-    var id = '';
-    try {
-      id = new URLSearchParams(location.search).get('v') ||
-        ((path.match(/^\/(shorts|live|embed)\/([\w-]{6,})/) || [])[2]) || '';
-    } catch (e) {}
+    var id = currentId();
     var title = (md && md.title) || (document.title || '').replace(/\s*[-–]\s*YouTube\s*$/i, '');
     var artist = (md && md.artist) ||
       text('.slim-owner-channel-name') || text('ytm-slim-owner-renderer .yt-core-attributed-string') ||
@@ -303,15 +442,16 @@
       state: state, title: title, artist: artist, art: art, id: id, ad: ad,
       dur: (v && isFinite(v.duration)) ? v.duration : 0,
       pos: v ? v.currentTime : 0,
+      rate: v ? v.playbackRate : 1,
       w: v ? (v.videoWidth || 0) : 0,
       h: v ? (v.videoHeight || 0) : 0
     };
-    var key = [o.state, o.title, o.artist, o.art, o.ad, Math.round(o.dur), o.w, o.h].join('|');
+    var key = [o.state, o.title, o.artist, o.art, o.ad, Math.round(o.dur), o.w, o.h, o.rate].join('|');
     var now = Date.now();
     if (force || key !== lastKey || (state === 'playing' && now - lastSentAt > 10000)) {
       lastKey = key;
       lastSentAt = now;
-      try { bridge.onState(JSON.stringify(o)); } catch (e) {}
+      call('onState', JSON.stringify(o));
     }
 
     // Не даём YouTube показать «Видео приостановлено. Продолжить просмотр?»
@@ -321,13 +461,28 @@
     }
   }
 
-  ['play', 'playing', 'pause', 'ended', 'loadedmetadata', 'durationchange', 'emptied', 'seeked', 'ratechange']
-    .forEach(function (t) {
-      document.addEventListener(t, function () { report(t === 'seeked' || t === 'play' || t === 'pause'); }, true);
-    });
+  function onMedia(e) {
+    var t = e.type;
+    var v = e.target;
+    if (isPlayer) {
+      if (t === 'playing' && !(q('.html5-video-player.ad-showing'))) {
+        var id = currentId();
+        if (id && id !== speedAppliedFor) {
+          speedAppliedFor = id;
+          var sp = +api.cfg.speed || 1;
+          if (sp !== 1) api.setSpeed(sp);
+        }
+      }
+      if (api.videoOnly && (t === 'loadedmetadata' || t === 'playing')) api.setVideoOnly(true);
+      report(t === 'seeked' || t === 'play' || t === 'pause' || t === 'ratechange');
+    } else if ((t === 'play' || t === 'playing') && v && v.tagName === 'VIDEO' && !v.muted && v.volume > 0) {
+      call('onBrowsePlay');   // в ленте заиграло видео со звуком (шортс) — ставим плеер на паузу
+    }
+  }
+  each(['play', 'playing', 'pause', 'ended', 'loadedmetadata', 'durationchange', 'emptied', 'seeked', 'ratechange'],
+    function (t) { document.addEventListener(t, onMedia, true); });
   window.addEventListener('yt-navigate-finish', function () { report(true); }, true);
-  window.addEventListener('popstate', function () { setTimeout(function () { report(true); }, 300); }, true);
 
-  setInterval(function () { ensureStyle(); report(false); }, 500);
+  setInterval(function () { ensureStyle(); ensureButtons(); report(false); }, 500);
   api.report = function () { report(true); };
 })();

@@ -30,11 +30,11 @@ public class ControlReceiver extends BroadcastReceiver {
             case PAUSE: Ctl.pause(); break;
             case NEXT: Ctl.next(); break;
             case PREV: Ctl.prev(); break;
-            case REWIND: Ctl.seekBy(-10); break;
-            case FORWARD: Ctl.seekBy(10); break;
+            case REWIND: Ctl.seekBy(-Prefs.seekStep(context)); break;
+            case FORWARD: Ctl.seekBy(Prefs.seekStep(context)); break;
             case CLOSE:
                 Ctl.pause();
-                PlaybackService.stop(context);
+                if (Flavor.BACKGROUND) PlaybackService.stop(context);
                 break;
             default: break;
         }

@@ -92,8 +92,8 @@ public class PlaybackService extends Service {
             @Override public void onStop() { Ctl.pause(); }
             @Override public void onSkipToNext() { Ctl.next(); }
             @Override public void onSkipToPrevious() { Ctl.prev(); }
-            @Override public void onFastForward() { Ctl.seekBy(10); }
-            @Override public void onRewind() { Ctl.seekBy(-10); }
+            @Override public void onFastForward() { Ctl.seekBy(Prefs.seekStep(PlaybackService.this)); }
+            @Override public void onRewind() { Ctl.seekBy(-Prefs.seekStep(PlaybackService.this)); }
             @Override public void onSeekTo(long pos) { Ctl.seekTo(pos / 1000.0); }
         });
         session.setSessionActivity(openAppIntent());
@@ -110,6 +110,7 @@ public class PlaybackService extends Service {
         audio = (AudioManager) getSystemService(AUDIO_SERVICE);
 
         IntentFilter f = new IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY);
+        f.addAction(Intent.ACTION_SCREEN_OFF);
         if (Build.VERSION.SDK_INT >= 33) registerReceiver(noisy, f, Context.RECEIVER_EXPORTED);
         else registerReceiver(noisy, f);
 
@@ -186,7 +187,8 @@ public class PlaybackService extends Service {
         if (playing) {
             if (!wakeLock.isHeld()) wakeLock.acquire(4 * 60 * 60 * 1000L);
             if (wifiLock != null && !wifiLock.isHeld()) wifiLock.acquire();
-            requestFocus();
+            if (Prefs.bgFocus(this)) requestFocus();
+            else abandonFocus();
         } else {
             if (wakeLock.isHeld()) wakeLock.release();
             if (wifiLock != null && wifiLock.isHeld()) wifiLock.release();
@@ -342,8 +344,13 @@ public class PlaybackService extends Service {
     private final BroadcastReceiver noisy = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
-            // наушники отключены
-            Ctl.pause();
+            String a = intent.getAction();
+            if (AudioManager.ACTION_AUDIO_BECOMING_NOISY.equals(a)) {
+                // наушники отключены
+                if (Prefs.bgNoisy(context)) Ctl.pause();
+            } else if (Intent.ACTION_SCREEN_OFF.equals(a)) {
+                if (!Prefs.bgScreenOff(context)) Ctl.pause();
+            }
         }
     };
 }
