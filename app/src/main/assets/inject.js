@@ -19,7 +19,7 @@
 
   var bridge = window.YTXBridge;
   var nativeParse = JSON.parse;
-  var cfg = { role: 'browse', adblock: true, bg: false, speed: 1, pip: false };
+  var cfg = { role: 'browse', adblock: true, bg: false, speed: 1, pip: false, captionsOff: true, shortsQuality: 'auto' };
   try { if (bridge) cfg = nativeParse(bridge.config()); } catch (e) {}
   var isPlayer = cfg.role === 'player';
 
@@ -106,6 +106,16 @@
     trap('playerResponse');
   }
 
+  /* Субтитры по умолчанию выключены: запоминаемая настройка плеера YouTube */
+  if (cfg.captionsOff) {
+    try {
+      var nowTs = Date.now();
+      var off = JSON.stringify({ data: 'false', expiration: nowTs + 31536e6, creation: nowTs });
+      localStorage.setItem('yt-player-sticky-caption', off);
+      localStorage.setItem('yt-html5-player-modules::subtitlesModuleData::module-enabled', off);
+    } catch (e) {}
+  }
+
   /* ================================================================== */
   /* 2. CSS                                                             */
   /* ================================================================== */
@@ -142,6 +152,11 @@
     '[class*="unmute-button"]', '.ytm-muted-autoplay-endscreen'
   ].map(function (s) { return 'html.ytx-player ' + s + '{display:none!important}'; }).join('\n') + '\n';
 
+  // Шортс: субтитры скрыты (кнопки включить их там всё равно нет)
+  var SHORTS_CAPTIONS_CSS =
+    'html.ytx-shorts .ytp-caption-window-container,html.ytx-shorts .caption-window,' +
+    'html.ytx-shorts .ytp-caption-segment{display:none!important}\n';
+
   // Кнопки приложения в шапке YouTube
   var BTN_CSS =
     '.ytx-btn{display:inline-flex!important;align-items:center;justify-content:center;width:40px;height:40px;' +
@@ -157,6 +172,7 @@
   var lastCss = null;
   function ensureStyle() {
     var css = (api.cfg.adblock ? AD_CSS + '\n' : '') + VIDEO_ONLY_CSS + BTN_CSS + PLAYER_CSS +
+      (api.cfg.captionsOff ? SHORTS_CAPTIONS_CSS : '') +
       (miniPad > 0 ? 'html body{padding-bottom:' + miniPad + 'px!important}\n' : '');
     if (css !== lastCss) { style.textContent = css; lastCss = css; }
     var rootEl = document.documentElement;
@@ -327,6 +343,65 @@
     try { if (mp && typeof mp.setPlaybackRate === 'function') mp.setPlaybackRate(r); } catch (e) {}
     var v = video(); if (v) v.playbackRate = r;
   };
+  api.scrollTop = function () { try { window.scrollTo(0, 0); } catch (e) {} };
+
+  /* Качество */
+  var QUALITY_ORDER = ['highres', 'hd2160', 'hd1440', 'hd1080', 'hd720', 'large', 'medium', 'small', 'tiny'];
+  function activePlayer() {
+    var vids = qa('video');
+    for (var i = 0; i < vids.length; i++) {
+      if (!vids[i].paused) {
+        var mp = vids[i].closest && vids[i].closest('.html5-video-player');
+        if (mp) return mp;
+      }
+    }
+    return playerApi();
+  }
+  api.qualityInfo = function () {
+    var mp = activePlayer();
+    var levels = [], cur = '';
+    try { if (mp && mp.getAvailableQualityLevels) levels = mp.getAvailableQualityLevels() || []; } catch (e) {}
+    try { if (mp && mp.getPlaybackQuality) cur = mp.getPlaybackQuality() || ''; } catch (e) {}
+    return JSON.stringify({ levels: levels, current: cur });
+  };
+  function bestLevel(levels, want) {
+    if (want === 'auto' || !levels || !levels.length) return want;
+    if (levels.indexOf(want) >= 0) return want;
+    var wi = QUALITY_ORDER.indexOf(want);
+    for (var i = Math.max(0, wi); i < QUALITY_ORDER.length; i++) {
+      if (levels.indexOf(QUALITY_ORDER[i]) >= 0) return QUALITY_ORDER[i];
+    }
+    return want;
+  }
+  function setQualityOn(mp, q) {
+    if (!mp) return;
+    try {
+      var levels = mp.getAvailableQualityLevels ? mp.getAvailableQualityLevels() : [];
+      var lv = bestLevel(levels, q);
+      if (mp.setPlaybackQualityRange) mp.setPlaybackQualityRange(lv, lv);
+      if (mp.setPlaybackQuality) mp.setPlaybackQuality(lv);
+    } catch (e) {}
+  }
+  api.setQuality = function (q) {
+    each(qa('.html5-video-player'), function (mp) { setQualityOn(mp, q); });
+  };
+
+  /* Субтитры: выключаем на каждом новом видео (пользователь может включить вручную) */
+  var captionsDone = {};
+  function captionsOff(v, id) {
+    if (!api.cfg.captionsOff || !v || !id || captionsDone[id]) return;
+    captionsDone[id] = 1;
+    var mp = (v.closest && v.closest('.html5-video-player')) || playerApi();
+    if (!mp) return;
+    var off = function () {
+      try { if (mp.unloadModule) { mp.unloadModule('captions'); mp.unloadModule('cc'); } } catch (e) {}
+      try { if (mp.setOption) mp.setOption('captions', 'track', {}); } catch (e) {}
+    };
+    off();
+    setTimeout(off, 1500);
+    setTimeout(off, 4000);
+  }
+
   api.setMiniPad = function (px) { miniPad = +px || 0; ensureStyle(); };
   api.getSpeed = function () { var v = video(); return v ? v.playbackRate : 1; };
   api.setCfg = function (c) {
@@ -356,11 +431,13 @@
     settings: 'M19.14 12.94a7.07 7.07 0 0 0 .06-.94 7.07 7.07 0 0 0-.06-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96a7.03 7.03 0 0 0-1.62-.94l-.36-2.54A.48.48 0 0 0 13.92 2h-3.84a.48.48 0 0 0-.48.41l-.36 2.54c-.59.24-1.13.56-1.62.94l-2.39-.96a.49.49 0 0 0-.59.22L2.72 8.47a.48.48 0 0 0 .12.61l2.03 1.58a7.4 7.4 0 0 0 0 1.88l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54a7.03 7.03 0 0 0 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.49.49 0 0 0-.12-.61zM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2z',
     minimize: 'M7.41 8.59 12 13.17l4.59-4.58L18 10l-6 6-6-6z',
     menu: 'M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z',
+    quality: 'M19 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2zm-8 12H9.5v-2h-2v2H6V9h1.5v2.5h2V9H11v6zm2-6h4c.55 0 1 .45 1 1v4c0 .55-.45 1-1 1h-4V9zm1.5 4.5h2v-3h-2v3z',
     pip: 'M19 11h-8v6h8v-6zm4 8V4.98C23 3.88 22.1 3 21 3H3c-1.1 0-2 .88-2 1.98V19c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2zm-2 .02H3V4.97h18v14.05z'
   };
   function makeBtn(action, label) {
     var b = document.createElement('button');
     b.className = 'ytx-btn ytx-btn-' + action;
+    b.setAttribute('data-ytx', action);
     b.setAttribute('aria-label', label);
     b.setAttribute('type', 'button');
     b.innerHTML = '<svg viewBox="0 0 24 24"><path d="' + ICONS[action] + '"/></svg>';
@@ -384,6 +461,7 @@
       q('.mobile-topbar-header-content') || q('ytm-mobile-topbar-renderer header') ||
       q('header.mobile-topbar-header');
   }
+  function isShorts() { return /^\/shorts(\/|$)/.test(location.pathname); }
   function firstVisibleChild(bar) {
     // ставим ⌄ перед логотипом, пропуская пустые/служебные узлы
     for (var c = bar.firstElementChild; c; c = c.nextElementSibling) {
@@ -395,9 +473,13 @@
   function ensureButtons() {
     if (!document.body || api.videoOnly) return;
     var bar = topbar();
-    var want = isPlayer ? (api.cfg.pip ? ['minimize', 'pip', 'menu'] : ['minimize', 'menu']) : ['settings'];
+    var want = isPlayer ? (api.cfg.pip ? ['minimize', 'pip', 'menu'] : ['minimize', 'menu'])
+      : (isShorts() ? ['quality', 'settings'] : ['settings']);
     var labels = { settings: 'Настройки приложения', minimize: 'Свернуть видео', menu: 'Меню плеера',
-      pip: 'Картинка в картинке' };
+      pip: 'Картинка в картинке', quality: 'Качество видео' };
+    each(qa('.ytx-btn'), function (b) {
+      if (want.indexOf(b.getAttribute('data-ytx')) < 0 && b.parentNode) b.parentNode.removeChild(b);
+    });
     each(want, function (action) {
       var existing = q('.ytx-btn-' + action);
       if (bar) {
@@ -413,6 +495,7 @@
         if (action === 'minimize') { f.style.top = '8px'; f.style.left = '8px'; }
         else if (action === 'menu') { f.style.top = '8px'; f.style.right = '8px'; }
         else if (action === 'pip') { f.style.top = '8px'; f.style.right = '56px'; }
+        else if (action === 'quality') { f.style.top = '8px'; f.style.right = '56px'; }
         else { f.style.bottom = '64px'; f.style.left = '8px'; }
         document.body.appendChild(f);
       }
@@ -448,7 +531,8 @@
       var r = pivot.getBoundingClientRect();
       if (r.height > 0 && r.bottom >= window.innerHeight - 2) h = Math.round(r.height);
     }
-    var shorts = /^\/shorts(\/|$)/.test(location.pathname);
+    var shorts = isShorts();
+    document.documentElement.classList.toggle('ytx-shorts', shorts);
     var key = h + '|' + shorts;
     if (key !== lastLayout) {
       lastLayout = key;
@@ -515,9 +599,16 @@
       pos: v ? v.currentTime : 0,
       rate: v ? v.playbackRate : 1,
       w: v ? (v.videoWidth || 0) : 0,
-      h: v ? (v.videoHeight || 0) : 0
+      h: v ? (v.videoHeight || 0) : 0,
+      vr: [0, 0, 0, 0],
+      vw: window.innerWidth || 0
     };
-    var key = [o.state, o.title, o.artist, o.art, o.ad, Math.round(o.dur), o.w, o.h, o.rate].join('|');
+    // Где видео на странице — приложение показывает в мини-плеере и PiP только этот участок
+    if (v) {
+      var rc = v.getBoundingClientRect();
+      o.vr = [Math.round(rc.left), Math.round(rc.top), Math.round(rc.width), Math.round(rc.height)];
+    }
+    var key = [o.state, o.title, o.artist, o.art, o.ad, Math.round(o.dur), o.w, o.h, o.rate, o.vr.join(','), o.vw].join('|');
     var now = Date.now();
     if (force || key !== lastKey || (state === 'playing' && now - lastSentAt > 10000)) {
       lastKey = key;
@@ -545,7 +636,10 @@
         }
       }
       if (api.videoOnly && (t === 'loadedmetadata' || t === 'playing')) api.setVideoOnly(true);
-      if (t === 'playing') ensureSound(v, !!q('.html5-video-player.ad-showing'));
+      if (t === 'playing') {
+        ensureSound(v, !!q('.html5-video-player.ad-showing'));
+        captionsOff(v, 'p:' + currentId());
+      }
       // Видео загрузилось, но YouTube его не запустил — один раз запускаем сами
       if ((t === 'loadedmetadata' || t === 'canplay') && isVideoPath(location.pathname)) {
         var nid = currentId();
@@ -555,7 +649,14 @@
         }
       }
       report(t === 'seeked' || t === 'play' || t === 'pause' || t === 'ratechange');
-    } else if (t === 'playing' && v && v.tagName === 'VIDEO' && /^\/shorts\//.test(location.pathname)) {
+    } else if (t === 'playing' && v && v.tagName === 'VIDEO' && isShorts()) {
+      var sid = 's:' + currentId();
+      captionsOff(v, sid);
+      if (api.cfg.shortsQuality && api.cfg.shortsQuality !== 'auto' && v.getAttribute('data-ytx-q') !== sid) {
+        v.setAttribute('data-ytx-q', sid);
+        var mpq = v.closest && v.closest('.html5-video-player');
+        setTimeout(function () { setQualityOn(mpq, api.cfg.shortsQuality); }, 300);
+      }
       // В ленте заиграл шортс со звуком — ставим основное видео на паузу.
       // Проверяем с задержкой: превью в ленте играют без звука, и звук им ставят не сразу.
       setTimeout(function () {

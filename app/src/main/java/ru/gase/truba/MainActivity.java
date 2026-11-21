@@ -66,6 +66,12 @@ public class MainActivity extends Activity {
     private YtWebView browseWeb;
     private YtWebView playerWeb;
     private FrameLayout playerBox;
+    /** Рамка, обрезающая уменьшенную страницу плеера до видео (мини-плеер, PiP). */
+    private FrameLayout videoClip;
+    /** Размер страницы плеера в пикселях: в мини-плеере и PiP он не меняется. */
+    private int fullW;
+    private int fullH;
+    private String lastRectKey = "";
     private View miniTouch;
     private LinearLayout miniInfo;
     private TextView miniTitle;
@@ -113,6 +119,14 @@ public class MainActivity extends Activity {
         root = new FrameLayout(this);
         root.setBackgroundColor(0xFF0F0F0F);
         setContentView(root);
+        root.addOnLayoutChangeListener(new View.OnLayoutChangeListener() {
+            @Override
+            public void onLayoutChange(View v, int l, int t, int r, int b, int ol, int ot, int or, int ob) {
+                if (r - l == or - ol && b - t == ob - ot) return;
+                if (!inPip && r - l > 0) { fullW = r - l; fullH = b - t; }
+                applyLayout();
+            }
+        });
 
         browseWeb = createWebView(false);
         root.addView(browseWeb, new FrameLayout.LayoutParams(
@@ -226,7 +240,9 @@ public class MainActivity extends Activity {
             browseWeb.reload();
             if (playerWeb != null && mode != NONE) playerWeb.reload();
         } else {
-            String common = "adblock:" + adblock + ",speed:" + Prefs.speed(this);
+            String common = "adblock:" + adblock + ",speed:" + Prefs.speed(this)
+                    + ",captionsOff:" + Prefs.captionsOff(this)
+                    + ",shortsQuality:'" + Prefs.shortsQuality(this) + "'";
             browseJs("setCfg({" + common + ",bg:false})");
             runPlayerCommand("setCfg({" + common + ",bg:" + background + "})");
         }
@@ -266,6 +282,10 @@ public class MainActivity extends Activity {
             @Override
             public void onClick(View v) { setMode(EXPANDED); }
         };
+
+        videoClip = new FrameLayout(this);
+        videoClip.setClipChildren(true);
+        playerBox.addView(videoClip);
 
         miniTouch = new View(this);
         miniTouch.setOnClickListener(expand);
@@ -316,39 +336,111 @@ public class MainActivity extends Activity {
     private void ensurePlayer() {
         if (playerWeb != null) return;
         playerWeb = createWebView(true);
-        playerBox.addView(playerWeb, 0, new FrameLayout.LayoutParams(
+        videoClip.addView(playerWeb, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
     }
 
+    /**
+     * Раскладка окон. В мини-плеере и PiP страница плеера НЕ сжимается: WebView остаётся
+     * полноэкранного размера, а мы показываем его уменьшенным и обрезанным до видео.
+     * Для YouTube страница выглядит как при обычном просмотре — видео не замирает.
+     */
     private void applyLayout() {
+        if (browseWeb == null) return;
         boolean mini = mode == MINI && !inPip;
-        // В шортс мини-плеер не показываем — он мешает и всё равно стоит на паузе
+        // В шортс мини-плеер не показываем — видео и лента при этом сохраняются
         boolean miniShown = mini && !browseShorts;
         int miniH = dp(64);
         int miniW = Math.round(miniH * 16f / 9f);
+        if (fullW <= 0 && root.getWidth() > 0 && !inPip) { fullW = root.getWidth(); fullH = root.getHeight(); }
+        if (fullW <= 0) {
+            fullW = getResources().getDisplayMetrics().widthPixels;
+            fullH = getResources().getDisplayMetrics().heightPixels;
+        }
 
         // Лента не видна, пока видео развёрнуто или в PiP: заодно там останавливаются превью
         boolean browseHidden = mode == EXPANDED || (inPip && mode != NONE);
         browseWeb.setVisibility(browseHidden ? View.INVISIBLE : View.VISIBLE);
         browseJs("setMiniPad(" + (miniShown ? 64 : 0) + ")");
 
-        if (mode == NONE || playerWeb == null || (mini && !miniShown)) {
+        if (mode == NONE || playerWeb == null) {
             playerBox.setVisibility(View.GONE);
-            if (mode != NONE && playerWeb != null) runPlayerCommand("setVideoOnly(true)");
+            return;
+        }
+        if (mini && !miniShown) {
+            playerBox.setVisibility(View.INVISIBLE);
             return;
         }
         playerBox.setVisibility(View.VISIBLE);
-        FrameLayout.LayoutParams plp = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-                mini ? miniH : ViewGroup.LayoutParams.MATCH_PARENT, Gravity.BOTTOM);
-        // Мини-плеер — над нижним меню YouTube, как в официальном приложении
-        if (mini) plp.bottomMargin = dp(browsePivot);
-        playerBox.setLayoutParams(plp);
-        playerBox.setBackgroundColor(mini ? 0xFF212121 : Color.BLACK);
-        playerBox.setElevation(mini ? dp(8) : 0);
 
-        playerWeb.setLayoutParams(mini
-                ? new FrameLayout.LayoutParams(miniW, miniH, Gravity.START | Gravity.CENTER_VERTICAL)
-                : new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        if (!mini && !inPip) {
+            // Развёрнуто: всё как обычно
+            playerBox.setLayoutParams(new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            playerBox.setBackgroundColor(Color.BLACK);
+            playerBox.setElevation(0);
+            videoClip.setLayoutParams(new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            playerWeb.setLayoutParams(new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            playerWeb.setScaleX(1f);
+            playerWeb.setScaleY(1f);
+            playerWeb.setTranslationX(0f);
+            playerWeb.setTranslationY(0f);
+            miniTouch.setVisibility(View.GONE);
+            miniInfo.setVisibility(View.GONE);
+            return;
+        }
+
+        // Мини-плеер или PiP: куда вписать видео
+        int slotW;
+        int slotH;
+        FrameLayout.LayoutParams plp;
+        if (inPip) {
+            plp = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+            slotW = root.getWidth() > 0 ? root.getWidth() : fullW;
+            slotH = root.getHeight() > 0 ? root.getHeight() : fullH;
+        } else {
+            plp = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, miniH, Gravity.BOTTOM);
+            plp.bottomMargin = dp(browsePivot); // над нижним меню YouTube
+            slotW = miniW;
+            slotH = miniH;
+        }
+        playerBox.setLayoutParams(plp);
+        playerBox.setBackgroundColor(inPip ? Color.BLACK : 0xFF212121);
+        playerBox.setElevation(inPip ? 0 : dp(8));
+
+        // Прямоугольник видео на странице → пиксели WebView
+        PlayerState st = Ctl.state;
+        float ratio = st.viewportWidth > 0 ? (float) fullW / st.viewportWidth
+                : getResources().getDisplayMetrics().density;
+        float vx = st.videoRect[0] * ratio;
+        float vy = st.videoRect[1] * ratio;
+        float vw = st.videoRect[2] * ratio;
+        float vh = st.videoRect[3] * ratio;
+        if (vw < 20 || vh < 20 || vy + vh <= 0 || vy >= fullH) {
+            vx = 0;
+            vy = dp(48);
+            vw = fullW;
+            vh = fullW * 9f / 16f;
+        }
+        float sc = Math.min(slotW / vw, slotH / vh);
+        int cw = Math.max(1, Math.round(vw * sc));
+        int ch = Math.max(1, Math.round(vh * sc));
+
+        FrameLayout.LayoutParams clp = new FrameLayout.LayoutParams(cw, ch, Gravity.TOP | Gravity.START);
+        clp.leftMargin = (slotW - cw) / 2;
+        clp.topMargin = (slotH - ch) / 2;
+        videoClip.setLayoutParams(clp);
+
+        playerWeb.setLayoutParams(new FrameLayout.LayoutParams(fullW, fullH, Gravity.TOP | Gravity.START));
+        playerWeb.setPivotX(0f);
+        playerWeb.setPivotY(0f);
+        playerWeb.setScaleX(sc);
+        playerWeb.setScaleY(sc);
+        playerWeb.setTranslationX(-vx * sc);
+        playerWeb.setTranslationY(-vy * sc);
+
         miniTouch.setLayoutParams(new FrameLayout.LayoutParams(miniW, miniH, Gravity.START));
         miniTouch.setVisibility(mini ? View.VISIBLE : View.GONE);
         FrameLayout.LayoutParams ilp = new FrameLayout.LayoutParams(
@@ -356,8 +448,6 @@ public class MainActivity extends Activity {
         ilp.leftMargin = miniW;
         miniInfo.setLayoutParams(ilp);
         miniInfo.setVisibility(mini ? View.VISIBLE : View.GONE);
-
-        runPlayerCommand("setVideoOnly(" + (mini || inPip) + ")");
     }
 
     private void onBrowseLayout(int pivot, boolean shorts) {
@@ -369,6 +459,7 @@ public class MainActivity extends Activity {
 
     private void setMode(int m) {
         if (m != NONE && playerWeb == null) return;
+        if (m == MINI && mode != MINI) runPlayerCommand("scrollTop()");
         mode = m;
         if (m == EXPANDED) {
             browseJs("pauseAll()");
@@ -430,7 +521,8 @@ public class MainActivity extends Activity {
         setMode(NONE);
     }
 
-    private void uiAction(String a) {
+    private void uiAction(String a, boolean fromPlayer) {
+        if ("quality".equals(a)) { showQualityDialog(fromPlayer); return; }
         if ("settings".equals(a)) openSettings();
         else if ("minimize".equals(a)) setMode(MINI);
         else if ("menu".equals(a)) showPlayerMenu();
@@ -448,6 +540,8 @@ public class MainActivity extends Activity {
             labels.add("Картинка в картинке");
             acts.add(new Runnable() { public void run() { enterPipNow(); } });
         }
+        labels.add("Качество");
+        acts.add(new Runnable() { public void run() { showQualityDialog(true); } });
         labels.add("Скорость: " + fmtSpeed(Ctl.state.rate));
         acts.add(new Runnable() { public void run() { showSpeedDialog(); } });
         labels.add(sleepLabel());
@@ -463,6 +557,73 @@ public class MainActivity extends Activity {
                     public void onClick(DialogInterface d, int which) { acts.get(which).run(); }
                 })
                 .show();
+    }
+
+    private static String qualityLabel(String q) {
+        switch (q) {
+            case "highres": return "4320p (8K)";
+            case "hd2160": return "2160p (4K)";
+            case "hd1440": return "1440p";
+            case "hd1080": return "1080p";
+            case "hd720": return "720p";
+            case "large": return "480p";
+            case "medium": return "360p";
+            case "small": return "240p";
+            case "tiny": return "144p";
+            case "auto": return "Авто";
+            default: return q;
+        }
+    }
+
+    /** Выбор качества: для шортс (лента) или для открытого видео (плеер). */
+    private void showQualityDialog(final boolean player) {
+        WebView w = player ? playerWeb : browseWeb;
+        if (w == null) return;
+        w.evaluateJavascript("window.__ytx?window.__ytx.qualityInfo():''", new android.webkit.ValueCallback<String>() {
+            @Override
+            public void onReceiveValue(String raw) {
+                final ArrayList<String> values = new ArrayList<String>();
+                String current = "";
+                try {
+                    String json = new org.json.JSONArray("[" + raw + "]").optString(0, "");
+                    org.json.JSONObject o = new org.json.JSONObject(json);
+                    org.json.JSONArray lv = o.optJSONArray("levels");
+                    current = o.optString("current", "");
+                    if (lv != null) for (int i = 0; i < lv.length(); i++) values.add(lv.optString(i));
+                } catch (Exception ignored) {
+                }
+                if (!values.contains("auto")) values.add("auto");
+                if (values.size() <= 1) {
+                    Toast.makeText(MainActivity.this, "Для этого видео выбор качества недоступен",
+                            Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                String saved = player ? current : Prefs.shortsQuality(MainActivity.this);
+                String[] labels = new String[values.size()];
+                int checked = values.indexOf("auto");
+                for (int i = 0; i < values.size(); i++) {
+                    labels[i] = qualityLabel(values.get(i));
+                    if (values.get(i).equals(saved)) checked = i;
+                }
+                new AlertDialog.Builder(MainActivity.this, android.R.style.Theme_Material_Dialog_Alert)
+                        .setTitle(player ? "Качество видео" : "Качество шортс")
+                        .setSingleChoiceItems(labels, checked, new DialogInterface.OnClickListener() {
+                            @Override
+                            public void onClick(DialogInterface d, int which) {
+                                String q = values.get(which);
+                                if (player) {
+                                    runPlayerCommand("setQuality('" + q + "')");
+                                } else {
+                                    Prefs.get(MainActivity.this).edit().putString("shorts_quality", q).apply();
+                                    browseJs("setCfg({shortsQuality:'" + q + "'})");
+                                    browseJs("setQuality('" + q + "')");
+                                }
+                                d.dismiss();
+                            }
+                        })
+                        .show();
+            }
+        });
     }
 
     static final float[] SPEEDS = {0.25f, 0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f};
@@ -599,7 +760,7 @@ public class MainActivity extends Activity {
             browseWeb = null;
         }
         if (playerWeb != null) {
-            playerBox.removeView(playerWeb);
+            videoClip.removeView(playerWeb);
             playerWeb.destroy();
             playerWeb = null;
         }
@@ -675,6 +836,15 @@ public class MainActivity extends Activity {
         }
 
         @Override
+        public void doUpdateVisitedHistory(WebView v, String url, boolean isReload) {
+            // Срабатывает и на переходы внутри сайта (pushState) — надёжно знаем, открыт ли Shorts
+            if (player || url == null) return;
+            String path = Uri.parse(url).getPath();
+            boolean shorts = path != null && (path.equals("/shorts") || path.startsWith("/shorts/"));
+            onBrowseLayout(browsePivot, shorts);
+        }
+
+        @Override
         public void onPageStarted(WebView v, String url, Bitmap favicon) {
             injectFallback(v);
         }
@@ -695,7 +865,7 @@ public class MainActivity extends Activity {
         public boolean onRenderProcessGone(WebView v, RenderProcessGoneDetail detail) {
             // Система убила процесс отрисовки (например, нехватка памяти) — пересоздаём экран.
             if (browseWeb == v) { root.removeView(browseWeb); browseWeb = null; }
-            if (playerWeb == v) { playerBox.removeView(playerWeb); playerWeb = null; }
+            if (playerWeb == v) { videoClip.removeView(playerWeb); playerWeb = null; }
             v.destroy();
             Ctl.state = new PlayerState();
             if (Flavor.BACKGROUND) PlaybackService.stop(MainActivity.this);
@@ -788,7 +958,9 @@ public class MainActivity extends Activity {
                     + ",\"adblock\":" + adblock
                     + ",\"bg\":" + (player && background)
                     + ",\"speed\":" + Prefs.speed(MainActivity.this)
-                    + ",\"pip\":" + (player && pipAvailable) + "}";
+                    + ",\"pip\":" + (player && pipAvailable)
+                    + ",\"captionsOff\":" + Prefs.captionsOff(MainActivity.this)
+                    + ",\"shortsQuality\":\"" + Prefs.shortsQuality(MainActivity.this) + "\"}";
         }
 
         @JavascriptInterface
@@ -833,7 +1005,8 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public void uiAction(final String action) {
-            post(new Runnable() { public void run() { MainActivity.this.uiAction(action); } });
+            final boolean p = player;
+            post(new Runnable() { public void run() { MainActivity.this.uiAction(action, p); } });
         }
 
         private void post(Runnable r) { Ctl.MAIN.post(r); }
@@ -843,6 +1016,11 @@ public class MainActivity extends Activity {
         if (mode == NONE) return; // запоздалый отчёт после закрытия плеера
         Ctl.state = s;
         updateMini(s);
+        String rk = java.util.Arrays.toString(s.videoRect) + s.viewportWidth;
+        if (!rk.equals(lastRectKey)) {
+            lastRectKey = rk;
+            if (mode == MINI || inPip) applyLayout();
+        }
         if (background) {
             if (s.playing()) PlaybackService.startIfNeeded(this);
             PlaybackService.onState(s);
@@ -864,7 +1042,7 @@ public class MainActivity extends Activity {
     private void enterPipNow() {
         if (mode == NONE || !Pip.supported(this)) return;
         hideCustomView(true);
-        runPlayerCommand("setVideoOnly(true)");
+        runPlayerCommand("scrollTop()");
         Pip.enter(this, Ctl.state);
     }
 
@@ -872,7 +1050,7 @@ public class MainActivity extends Activity {
     protected void onUserLeaveHint() {
         super.onUserLeaveHint();
         if (!Pip.supported(this) || isInPictureInPictureMode() || !autoEnterWanted()) return;
-        runPlayerCommand("setVideoOnly(true)");
+        runPlayerCommand("scrollTop()");
         if (Build.VERSION.SDK_INT < 31) Pip.enter(this, Ctl.state);
     }
 
@@ -880,6 +1058,7 @@ public class MainActivity extends Activity {
     public void onPictureInPictureModeChanged(boolean isInPip, Configuration newConfig) {
         super.onPictureInPictureModeChanged(isInPip, newConfig);
         inPip = isInPip;
+        if (isInPip) runPlayerCommand("scrollTop()");
         if (!isInPip) {
             if (stopped) {
                 // окно PiP закрыли

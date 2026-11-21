@@ -15,6 +15,9 @@ final class PlayerState {
     double rate = 1;
     int width;
     int height;
+    /** Прямоугольник видео на странице (CSS px) и ширина окна страницы. */
+    int[] videoRect = {0, 0, 0, 0};
+    int viewportWidth;
     long receivedAt = android.os.SystemClock.elapsedRealtime();
 
     boolean playing() { return "playing".equals(state); }
@@ -37,6 +40,11 @@ final class PlayerState {
             if (Double.isNaN(s.rate) || s.rate <= 0) s.rate = 1;
             s.width = o.optInt("w", 0);
             s.height = o.optInt("h", 0);
+            org.json.JSONArray vr = o.optJSONArray("vr");
+            if (vr != null && vr.length() == 4) {
+                for (int i = 0; i < 4; i++) s.videoRect[i] = vr.optInt(i, 0);
+            }
+            s.viewportWidth = o.optInt("vw", 0);
             if (Double.isNaN(s.duration) || Double.isInfinite(s.duration)) s.duration = 0;
             if (Double.isNaN(s.position) || Double.isInfinite(s.position)) s.position = 0;
         } catch (Exception ignored) {

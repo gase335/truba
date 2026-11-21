@@ -28,6 +28,12 @@ final class Prefs {
         try { return Integer.parseInt(s(c, "seek_step", "10")); } catch (Exception e) { return 10; }
     }
 
+    /** Субтитры выключены по умолчанию (в видео и в шортс). */
+    static boolean captionsOff(Context c) { return b(c, "captions_off", true); }
+
+    /** Качество шортс: auto, hd1080, hd720, large (480p), medium (360p). */
+    static String shortsQuality(Context c) { return s(c, "shorts_quality", "auto"); }
+
     /** Продолжать видео в мини-плеере после просмотра шортс. */
     static boolean resumeAfterShorts(Context c) { return b(c, "resume_after_shorts", true); }
 
