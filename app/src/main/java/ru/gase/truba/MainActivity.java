@@ -191,6 +191,8 @@ public class MainActivity extends Activity {
         } else if (mode == EXPANDED) {
             if (!Prefs.backMinimizes(this) && canPlayerGoBack()) playerWeb.goBack();
             else setMode(MINI);
+        } else if (browseShorts && backOutOfShorts()) {
+            // из шортс — сразу туда, откуда пришли, а не по каждому пролистанному ролику
         } else if (browseWeb.canGoBack()) {
             browseWeb.goBack();
         } else if (mode != NONE) {
@@ -198,6 +200,29 @@ public class MainActivity extends Activity {
         } else {
             super.onBackPressed();
         }
+    }
+
+    /**
+     * «Назад» в Shorts: каждый пролистанный ролик — отдельная запись истории, поэтому обычный
+     * шаг назад просто показывал предыдущий шортс. Ищем последнюю запись не из Shorts и
+     * прыгаем сразу туда (внутри сайта — без перезагрузки).
+     */
+    private boolean backOutOfShorts() {
+        WebBackForwardList list = browseWeb.copyBackForwardList();
+        int cur = list.getCurrentIndex();
+        for (int i = cur - 1; i >= 0; i--) {
+            String url = list.getItemAtIndex(i).getUrl();
+            if (url == null || url.startsWith("about:")) continue;
+            String path = Uri.parse(url).getPath();
+            boolean shorts = path != null && (path.equals("/shorts") || path.startsWith("/shorts/"));
+            if (!shorts) {
+                browseWeb.goBackOrForward(i - cur);
+                return true;
+            }
+        }
+        // До шортс истории нет (открыли сразу шортс) — на главную
+        browseWeb.loadUrl(HOME);
+        return true;
     }
 
     private boolean canPlayerGoBack() {
@@ -211,9 +236,11 @@ public class MainActivity extends Activity {
 
     private void firstLaunch() {
         SharedPreferences p = Prefs.get(this);
-        if (!p.getBoolean("hint2_shown", false)) {
-            p.edit().putBoolean("hint2_shown", true).apply();
-            Toast.makeText(this, "Настройки приложения — шестерёнка в шапке YouTube",
+        if (!p.getBoolean("hint3_shown", false)) {
+            p.edit().putBoolean("hint3_shown", true).apply();
+            Toast.makeText(this, Flavor.LITE
+                            ? "Настройки: долгое нажатие на ⌄ в открытом видео"
+                            : "Настройки: долгое нажатие на иконку приложения или на ⌄ в открытом видео",
                     Toast.LENGTH_LONG).show();
         }
         if (Flavor.BACKGROUND && Build.VERSION.SDK_INT >= 33

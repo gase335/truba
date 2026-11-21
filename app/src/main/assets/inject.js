@@ -434,7 +434,8 @@
     quality: 'M19 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2zm-8 12H9.5v-2h-2v2H6V9h1.5v2.5h2V9H11v6zm2-6h4c.55 0 1 .45 1 1v4c0 .55-.45 1-1 1h-4V9zm1.5 4.5h2v-3h-2v3z',
     pip: 'M19 11h-8v6h8v-6zm4 8V4.98C23 3.88 22.1 3 21 3H3c-1.1 0-2 .88-2 1.98V19c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2zm-2 .02H3V4.97h18v14.05z'
   };
-  function makeBtn(action, label) {
+  // longAction — что делать при долгом нажатии (у ⌄ — открыть настройки приложения)
+  function makeBtn(action, label, longAction) {
     var b = document.createElement('button');
     b.className = 'ytx-btn ytx-btn-' + action;
     b.setAttribute('data-ytx', action);
@@ -443,8 +444,13 @@
     b.innerHTML = '<svg viewBox="0 0 24 24"><path d="' + ICONS[action] + '"/></svg>';
     // YouTube может гасить click в шапке, поэтому ловим и касание; повторы отсекаем
     var last = 0;
+    var timer = null;
+    var longFired = false;
+    var cancelLong = function () { if (timer) { clearTimeout(timer); timer = null; } };
     var fire = function (e) {
       e.preventDefault(); e.stopImmediatePropagation();
+      cancelLong();
+      if (longFired) return;           // это было долгое нажатие — короткое действие не нужно
       var now = Date.now();
       if (now - last < 600) return;
       last = now;
@@ -452,7 +458,17 @@
     };
     b.addEventListener('touchend', fire, true);
     b.addEventListener('click', fire, true);
-    b.addEventListener('touchstart', function (e) { e.stopImmediatePropagation(); }, true);
+    b.addEventListener('touchstart', function (e) {
+      e.stopImmediatePropagation();
+      longFired = false;
+      cancelLong();
+      if (longAction) {
+        timer = setTimeout(function () { timer = null; longFired = true; call('uiAction', longAction); }, 650);
+      }
+    }, true);
+    b.addEventListener('touchmove', cancelLong, true);
+    b.addEventListener('touchcancel', cancelLong, true);
+    b.addEventListener('contextmenu', function (e) { e.preventDefault(); }, true);
     return b;
   }
   function topbar() {
@@ -473,8 +489,8 @@
   function ensureButtons() {
     if (!document.body || api.videoOnly) return;
     var bar = topbar();
-    var want = isPlayer ? (api.cfg.pip ? ['minimize', 'pip', 'menu'] : ['minimize', 'menu'])
-      : (isShorts() ? ['quality', 'settings'] : ['settings']);
+    var want = isPlayer ? (api.cfg.pip ? ['minimize', 'pip'] : ['minimize'])
+      : (isShorts() ? ['quality'] : []);
     var labels = { settings: 'Настройки приложения', minimize: 'Свернуть видео', menu: 'Меню плеера',
       pip: 'Картинка в картинке', quality: 'Качество видео' };
     each(qa('.ytx-btn'), function (b) {
@@ -485,17 +501,17 @@
       if (bar) {
         if (existing && bar.contains(existing)) return;
         if (existing) existing.parentNode.removeChild(existing);
-        var b = makeBtn(action, labels[action]);
+        var b = makeBtn(action, labels[action], action === 'minimize' ? 'settings' : null);
         if (action === 'minimize') bar.insertBefore(b, firstVisibleChild(bar));
         else bar.appendChild(b);
       } else if (!existing && Date.now() - startedAt > 4000) {
         // шапку не нашли — плавающая кнопка
-        var f = makeBtn(action, labels[action]);
+        var f = makeBtn(action, labels[action], action === 'minimize' ? 'settings' : null);
         f.classList.add('ytx-float');
         if (action === 'minimize') { f.style.top = '8px'; f.style.left = '8px'; }
         else if (action === 'menu') { f.style.top = '8px'; f.style.right = '8px'; }
-        else if (action === 'pip') { f.style.top = '8px'; f.style.right = '56px'; }
-        else if (action === 'quality') { f.style.top = '8px'; f.style.right = '56px'; }
+        else if (action === 'pip') { f.style.top = '8px'; f.style.right = '8px'; }
+        else if (action === 'quality') { f.style.top = '8px'; f.style.right = '8px'; }
         else { f.style.bottom = '64px'; f.style.left = '8px'; }
         document.body.appendChild(f);
       }

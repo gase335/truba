@@ -10,8 +10,8 @@
 #   ANDROID_JAR=/путь/к/android-34/android.jar ./build.sh
 set -euo pipefail
 
-VERSION_CODE=4
-VERSION_NAME=2.2
+VERSION_CODE=5
+VERSION_NAME=2.3
 TARGET_SDK=34
 BASE_PKG=ru.gase.truba   # пакет Java-кода (R-класс)
 
